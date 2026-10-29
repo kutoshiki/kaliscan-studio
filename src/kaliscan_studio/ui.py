@@ -137,6 +137,8 @@ class EnvironmentDialog(QDialog):
         self.table.resizeColumnsToContents()
         self.message.setText("Selecciona una fila para usar una ruta manual. Las actualizaciones se consultan con el índice local de apt.")
         self.refresh_button.setEnabled(True)
+        self.install_button.setEnabled(any(not status.installed for status in statuses.values()))
+        self.update_button.setEnabled(any(status.update_available for status in statuses.values()))
 
     def choose_path(self) -> None:
         row = self.table.currentRow()

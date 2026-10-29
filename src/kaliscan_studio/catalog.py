@@ -57,20 +57,45 @@ def _output(args: list[str], timeout: int = 3) -> str:
 def _package_versions(package: str) -> tuple[str | None, str | None, bool]:
     if not shutil.which("dpkg-query") or not shutil.which("apt-cache"):
         return None, None, False
-    installed = _output(["dpkg-query", "-W", "-f=${Version}", package])
-    if not installed or "no packages found" in installed.lower():
+    try:
+        installed_result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Version}", package],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        installed = installed_result.stdout.strip() if installed_result.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
         installed = ""
-    policy = _output(["apt-cache", "policy", package])
+    try:
+        policy_result = subprocess.run(
+            ["apt-cache", "policy", package], capture_output=True, text=True,
+            timeout=3, check=False, env={**os.environ, "LC_ALL": "C"},
+        )
+        policy = policy_result.stdout if policy_result.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        policy = ""
     match = re.search(r"^\s*Candidate:\s*(\S+)", policy, re.MULTILINE)
     candidate = match.group(1) if match and match.group(1) != "(none)" else None
     update = False
     if installed and candidate:
-        update = subprocess.run(
-            ["dpkg", "--compare-versions", installed, "lt", candidate],
-            capture_output=True,
-            check=False,
-        ).returncode == 0
+        try:
+            update = subprocess.run(
+                ["dpkg", "--compare-versions", installed, "lt", candidate],
+                capture_output=True, check=False,
+            ).returncode == 0
+        except OSError:
+            pass
     return installed or None, candidate, update
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _version_label(output: str, package_version: str | None) -> str:
+    lines = [_ANSI.sub("", line).strip() for line in output.replace("\r", "\n").splitlines()]
+    lines = [re.sub(r"^\[(?:INF|INFO|WRN)\]\s*", "", line) for line in lines if line]
+    version_line = next((line for line in lines if re.search(r"version", line, re.I) and re.search(r"\d", line)), None)
+    version_line = version_line or next((line for line in lines if re.search(r"\d+\.\d+", line)), None)
+    return (version_line[:160] if version_line else package_version) or "Versión no disponible"
 
 
 def inspect_tool(key: str, override: str | None = None) -> ToolStatus:
@@ -78,11 +103,8 @@ def inspect_tool(key: str, override: str | None = None) -> ToolStatus:
     path = override if override and os.path.isfile(override) and os.access(override, os.X_OK) else next(
         (p for binary in tool.binaries if (p := shutil.which(binary))), None
     )
-    version = ""
-    if path:
-        version = _output([path, *tool.version_args]).splitlines()[0:1]
-        version = version[0][:160] if version else "Versión no disponible"
     installed, candidate, update = _package_versions(tool.package)
+    version = _version_label(_output([path, *tool.version_args]), installed) if path else ""
     return ToolStatus(key, path, version, installed, candidate, update)
 
 

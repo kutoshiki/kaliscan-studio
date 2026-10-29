@@ -13,9 +13,9 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-    QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
+    QProgressDialog, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -26,6 +26,7 @@ from .projects import Project, recent_projects
 from .runner import ScanEngine
 from .suggestions import Suggestion, propose
 from .ui import EnvironmentDialog, PlanForm
+from .updater import reinstall_app
 
 
 DARK = """
@@ -112,12 +113,24 @@ class ScanWorker(QThread):
         self.engine.cancel()
 
 
+class AppUpdateWorker(QThread):
+    result = Signal(bool, str)
+
+    def run(self) -> None:
+        try:
+            self.result.emit(*reinstall_app())
+        except Exception as exc:
+            self.result.emit(False, str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = QSettings("KaliScan Studio", "KaliScan Studio")
         self.project: Project | None = None
         self.scan_worker: ScanWorker | None = None
+        self.app_update_worker: AppUpdateWorker | None = None
+        self.update_progress: QProgressDialog | None = None
         self.setWindowTitle("KaliScan Studio")
         self.resize(1120, 760)
         root = QWidget()
@@ -132,6 +145,10 @@ class MainWindow(QMainWindow):
         tools_button = QPushButton("Herramientas de Kali")
         tools_button.clicked.connect(self.show_tools)
         header.addWidget(tools_button)
+        self.app_update_button = QPushButton("Actualizar KaliScan")
+        self.app_update_button.setToolTip("Busca la versión más reciente en el origen guardado por pipx.")
+        self.app_update_button.clicked.connect(self.update_app)
+        header.addWidget(self.app_update_button)
         header.addWidget(QLabel("Tema:"))
         self.theme = QComboBox()
         self.theme.addItem("Sistema", "system")
@@ -328,18 +345,22 @@ class MainWindow(QMainWindow):
         report_page = QWidget()
         report_layout = QVBoxLayout(report_page)
         report_layout.addWidget(QLabel("Revisa las observaciones y registra si cada una es un indicio, está comprobada o fue descartada."))
-        self.report_table = QTableWidget(0, 5)
-        self.report_table.setHorizontalHeaderLabels(["Objetivo", "Tipo", "Observación", "Estado", "Nota"])
+        self.report_table = QTableWidget(0, 6)
+        self.report_table.setHorizontalHeaderLabels(["Objetivo", "Tipo", "Observación", "Veces", "Estado", "Nota"])
         self.report_table.horizontalHeader().setStretchLastSection(True)
         report_layout.addWidget(self.report_table)
         report_actions = QHBoxLayout()
         save = QPushButton("Guardar revisión")
+        show_saved = QPushButton("Ver revisiones guardadas")
         export = QPushButton("Exportar informe HTML")
         save.setMinimumHeight(42)
+        show_saved.setMinimumHeight(42)
         export.setMinimumHeight(42)
         save.clicked.connect(self.save_reviews)
+        show_saved.clicked.connect(self.show_saved_reviews)
         export.clicked.connect(self.export_report)
         report_actions.addWidget(save)
+        report_actions.addWidget(show_saved)
         report_actions.addWidget(export)
         report_actions.addStretch()
         report_layout.addLayout(report_actions)
@@ -369,12 +390,17 @@ class MainWindow(QMainWindow):
             lines = []
             for change in changes:
                 lines.append(f"{change['tool']} · {change['target']}\n{change['old_run']} → {change['new_run']}")
-                lines.extend(f"+ {kind}: {value}" for kind, value in change["added"])
-                lines.extend(f"− {kind}: {value}" for kind, value in change["removed"])
+                if change["added"] or change["removed"]:
+                    lines.extend(f"+ {kind}: {value}" for kind, value in change["added"])
+                    lines.extend(f"− {kind}: {value}" for kind, value in change["removed"])
+                else:
+                    lines.append("Sin diferencias entre estas dos ejecuciones.")
                 lines.append("")
             self.changes_text.setPlainText("\n".join(lines))
         else:
-            self.changes_text.setPlainText("Todavía no hay cambios comparables.")
+            self.changes_text.setPlainText(
+                "Aún se necesitan dos ejecuciones completas de la misma herramienta sobre el mismo objetivo para comparar cambios."
+            )
         self.suggestions_list.clear()
         for suggestion in propose(self.project):
             item = QListWidgetItem(f"{suggestion.label} · {suggestion.target}\n{suggestion.reason}")
@@ -384,21 +410,22 @@ class MainWindow(QMainWindow):
             self.suggestions_list.addItem("No hay nuevos pasos propuestos con la evidencia actual.")
         self.report_table.setRowCount(0)
         reviews = self.project.reviews()
-        for observation in self.project.observations():
+        for observation in self.project.grouped_observations():
             row = self.report_table.rowCount()
             self.report_table.insertRow(row)
-            for col, value in enumerate((observation["target"], observation["kind"], observation["value"])):
+            for col, value in enumerate((observation["target"], observation["kind"], observation["value"], observation["count"])):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.report_table.setItem(row, col, item)
+            review = next((reviews[oid] for oid in reversed(observation["observation_ids"]) if oid in reviews), {})
             combo = QComboBox()
             for state in ("indicio", "comprobado", "descartado"):
                 combo.addItem(state)
-            combo.setCurrentText(reviews.get(observation["id"], {}).get("status", "indicio"))
-            self.report_table.setCellWidget(row, 3, combo)
-            note = QTableWidgetItem(reviews.get(observation["id"], {}).get("note", ""))
-            note.setData(Qt.UserRole, observation["id"])
-            self.report_table.setItem(row, 4, note)
+            combo.setCurrentText(review.get("status", "indicio"))
+            self.report_table.setCellWidget(row, 4, combo)
+            note = QTableWidgetItem(review.get("note", ""))
+            note.setData(Qt.UserRole, observation["observation_ids"])
+            self.report_table.setItem(row, 5, note)
         self.report_table.resizeColumnsToContents()
 
     def _refresh_progress(self, runs: list[dict] | None = None) -> None:
@@ -557,30 +584,111 @@ class MainWindow(QMainWindow):
             self.scan_worker.cancel()
             self.progress_label.setText("Cancelando la tarea actual…")
 
+    def _store_reviews(self) -> int:
+        if not self.project:
+            return 0
+        existing = self.project.reviews()
+        saved = 0
+        for row in range(self.report_table.rowCount()):
+            note = self.report_table.item(row, 5)
+            combo = self.report_table.cellWidget(row, 4)
+            if note and isinstance(combo, QComboBox):
+                observation_ids = note.data(Qt.UserRole)
+                if not observation_ids:
+                    continue
+                previous = next((existing[oid] for oid in reversed(observation_ids) if oid in existing), None)
+                status, comment = combo.currentText(), note.text()
+                if previous and previous["status"] == status and previous["note"] == comment:
+                    continue
+                if previous is None and status == "indicio" and not comment.strip():
+                    continue
+                saved += int(self.project.save_review(observation_ids[-1], status, comment))
+        return saved
+
     def save_reviews(self) -> None:
+        count = self._store_reviews()
+        QMessageBox.information(self, "Informe", f"{count} revisiones nuevas o modificadas guardadas en el proyecto.")
+
+    def show_saved_reviews(self) -> None:
         if not self.project:
             return
-        for row in range(self.report_table.rowCount()):
-            note = self.report_table.item(row, 4)
-            combo = self.report_table.cellWidget(row, 3)
-            if note and isinstance(combo, QComboBox):
-                self.project.save_review(int(note.data(Qt.UserRole)), combo.currentText(), note.text())
-        QMessageBox.information(self, "Informe", "Revisión guardada.")
+        rows = self.project.saved_reviews()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Revisiones guardadas")
+        dialog.resize(1100, 620)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"{len(rows)} revisiones guardadas en este proyecto. Los cambios sin guardar no aparecen aquí."))
+        search = QLineEdit()
+        search.setPlaceholderText("Buscar por objetivo, observación, estado o nota…")
+        layout.addWidget(search)
+        table = QTableWidget(len(rows), 8)
+        table.setHorizontalHeaderLabels(["Guardado", "Objetivo", "Tipo", "Observación", "Estado", "Herramienta", "Ejecución", "Nota"])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.horizontalHeader().setStretchLastSection(True)
+        for index, review in enumerate(rows):
+            values = (review["updated_at"] or "Fecha anterior no registrada", review["target"], review["kind"],
+                      review["value"], review["status"], review["tool"], review["run_id"], review["note"])
+            for column, value in enumerate(values):
+                table.setItem(index, column, QTableWidgetItem(str(value)))
+        table.resizeColumnsToContents()
+        def filter_saved(query: str) -> None:
+            needle = query.casefold()
+            for index, review in enumerate(rows):
+                haystack = " ".join(str(review[field]) for field in ("target", "kind", "value", "status", "note"))
+                table.setRowHidden(index, needle not in haystack.casefold())
+        search.textChanged.connect(filter_saved)
+        layout.addWidget(table)
+        close = QPushButton("Cerrar")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec()
 
     def export_report(self) -> None:
         if not self.project:
             return
-        for row in range(self.report_table.rowCount()):
-            note = self.report_table.item(row, 4)
-            combo = self.report_table.cellWidget(row, 3)
-            if note and isinstance(combo, QComboBox):
-                self.project.save_review(int(note.data(Qt.UserRole)), combo.currentText(), note.text())
+        self._store_reviews()
         path = self.project.export_report()
         QMessageBox.information(self, "Informe exportado", str(path))
 
     def show_tools(self) -> None:
         dialog = EnvironmentDialog(self.settings, self)
         dialog.exec()
+
+    def update_app(self) -> None:
+        if self._busy():
+            QMessageBox.information(self, "Actualizar KaliScan", "Espera a que termine el escaneo activo antes de actualizar.")
+            return
+        if self.app_update_worker and self.app_update_worker.isRunning():
+            return
+        if not sys.platform.startswith("linux"):
+            QMessageBox.information(self, "Actualizar KaliScan", "Esta opción está disponible en Kali Linux.")
+            return
+        if QMessageBox.question(
+            self, "Actualizar KaliScan",
+            "Se actualizará KaliScan Studio desde el origen guardado por pipx. "
+            "Los proyectos y resultados permanecerán en sus carpetas. ¿Continuar?"
+        ) != QMessageBox.Yes:
+            return
+        self.app_update_button.setEnabled(False)
+        self.update_progress = QProgressDialog("Actualizando KaliScan Studio…", "", 0, 0, self)
+        self.update_progress.setCancelButton(None)
+        self.update_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.update_progress.setMinimumDuration(0)
+        self.update_progress.show()
+        self.app_update_worker = AppUpdateWorker()
+        self.app_update_worker.result.connect(self.app_update_done)
+        self.app_update_worker.start()
+
+    def app_update_done(self, success: bool, output: str) -> None:
+        if self.update_progress:
+            self.update_progress.close()
+            self.update_progress.deleteLater()
+            self.update_progress = None
+        self.app_update_button.setEnabled(True)
+        title = "Actualización completada" if success else "No se pudo actualizar"
+        detail = "Cierra y vuelve a abrir KaliScan Studio para usar la versión instalada.\n\n" if success else ""
+        (QMessageBox.information if success else QMessageBox.warning)(self, title, detail + output)
 
     def go_home(self) -> None:
         self.refresh_home()
@@ -589,6 +697,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self._busy():
             QMessageBox.information(self, "Escaneo en curso", "Cancela la ejecución y espera a que termine antes de cerrar.")
+            event.ignore()
+        elif self.app_update_worker and self.app_update_worker.isRunning():
+            QMessageBox.information(self, "Actualización en curso", "Espera a que termine la actualización antes de cerrar.")
             event.ignore()
         else:
             event.accept()

@@ -38,6 +38,8 @@ pipx reinstall kaliscan-studio
 
 `pipx` reutiliza el origen de instalación que guardó, incluido este repositorio de GitHub. No hace falta borrar el entorno virtual manualmente. Los proyectos y resultados permanecen en las carpetas que elegiste al crearlos.
 
+También puedes pulsar **Actualizar KaliScan** en la esquina superior derecha. La aplicación ejecuta la misma actualización, muestra el resultado y te pide volver a abrirla. No se puede actualizar durante un escaneo. **Herramientas de Kali** administra los paquetes externos por separado.
+
 ## Primer arranque
 
 1. En cada arranque la aplicación comprueba rutas y versiones de las herramientas. Puedes indicar una ruta manual cuando haya varias copias, actualizar el índice de Kali e instalar o actualizar paquetes desde la misma pantalla.
@@ -46,6 +48,10 @@ pipx reinstall kaliscan-studio
 4. Tras la ejecución, abre **Resultados**, **Cambios**, **Siguientes pasos** e **Informe**. Puedes cerrar la aplicación y continuar el mismo proyecto después. Los planes interrumpidos se reanudan sin repetir tareas completadas.
 
 Mientras KaliScan Studio permanezca abierto, puedes volver a **Inicio** o abrir otro proyecto sin detener el escaneo activo. Al regresar al proyecto, **Progreso** muestra el estado y recupera el historial guardado. En **Resultados**, un clic en cualquier fila abre el archivo correspondiente.
+
+**Cambios** compara las dos ejecuciones completas más recientes de una misma herramienta y objetivo. Muestra las observaciones añadidas y eliminadas, o indica expresamente que no hubo diferencias. Si aún falta una segunda ejecución comparable, lo explica.
+
+En **Informe**, las observaciones repetidas aparecen agrupadas con un contador; los archivos originales permanecen separados. Cambia el estado o la nota y pulsa **Guardar revisión**. **Ver revisiones guardadas** muestra las decisiones persistidas, con fecha, objetivo y ejecución. **Exportar informe HTML** incluye esas revisiones y la evidencia.
 
 La selección de formato JSON, CSV o HTML genera un resumen normalizado. Los archivos originales de las herramientas siempre se conservan. Los resultados vacíos se guardan como archivos vacíos cuando la herramienta no emitió hallazgos.
 
@@ -98,3 +104,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 Para trabajar en la interfaz utiliza un entorno virtual e instala el paquete en modo editable con `pip install -e .` dentro de ese entorno. El proyecto está empaquetado con `pyproject.toml` y expone el comando `kaliscan-studio`.
+
+## Mensajes de Qt en la terminal
+
+Al iniciar desde una terminal, algunas instalaciones de Kali muestran avisos `qt.accessibility.atspi` sobre la integración de accesibilidad del escritorio. Si la ventana funciona y vuelve al prompt al cerrarla, esos avisos no indican por sí solos un fallo del escaneo. No se desactiva la accesibilidad para ocultarlos.

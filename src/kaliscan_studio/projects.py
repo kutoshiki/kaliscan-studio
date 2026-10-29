@@ -131,7 +131,8 @@ class Project:
                 CREATE TABLE IF NOT EXISTS reviews (
                     observation_id INTEGER PRIMARY KEY REFERENCES observations(id),
                     status TEXT NOT NULL DEFAULT 'indicio',
-                    note TEXT NOT NULL DEFAULT ''
+                    note TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_obs_target ON observations(target, kind);
                 CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(run_id);
@@ -141,6 +142,9 @@ class Project:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)")}
             if "kind" not in columns:
                 db.execute("ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'plan'")
+            review_columns = {row["name"] for row in db.execute("PRAGMA table_info(reviews)")}
+            if "updated_at" not in review_columns:
+                db.execute("ALTER TABLE reviews ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
 
     def new_run(self, options: ScanOptions, kind: str = "plan") -> str:
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
@@ -246,30 +250,55 @@ class Project:
         with self._connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM observations WHERE run_id=? ORDER BY id", (run_id,))]
 
+    def grouped_observations(self) -> list[dict]:
+        """Agrupa apariciones idénticas sin alterar la evidencia original."""
+        groups: dict[tuple[str, str, str], dict] = {}
+        for observation in self.observations():
+            key = (observation["target"], observation["kind"], observation["value"])
+            if key not in groups:
+                groups[key] = {**observation, "count": 0, "observation_ids": [], "job_ids": []}
+            group = groups[key]
+            group["count"] += 1
+            group["observation_ids"].append(observation["id"])
+            if observation["job_id"] not in group["job_ids"]:
+                group["job_ids"].append(observation["job_id"])
+            group["id"] = observation["id"]
+            group["job_id"] = observation["job_id"]
+            group["run_id"] = observation["run_id"]
+        return list(groups.values())
+
     def compare_jobs(self) -> list[dict]:
-        """Compara las dos ejecuciones más recientes de cada herramienta/objetivo."""
+        """Compara dos ejecuciones completas distintas por herramienta y objetivo."""
         groups: dict[tuple[str, str], list[dict]] = {}
+        complete_runs = {run["id"] for run in self.runs() if run["status"] == "complete"}
         for job in self.jobs():
-            if job["status"] == "complete" and job["tool"] != "resumen":
+            if job["status"] == "complete" and job["run_id"] in complete_runs and job["tool"] != "resumen":
                 groups.setdefault((job["tool"], job["target"]), []).append(job)
         changes: list[dict] = []
         with self._connect() as db:
             for (tool, target), jobs in groups.items():
-                if len(jobs) < 2:
+                latest_by_run: list[dict] = []
+                seen_runs: set[str] = set()
+                for job in reversed(jobs):
+                    if job["run_id"] not in seen_runs:
+                        latest_by_run.append(job)
+                        seen_runs.add(job["run_id"])
+                    if len(latest_by_run) == 2:
+                        break
+                if len(latest_by_run) < 2:
                     continue
-                old, new = jobs[-2:]
+                new, old = latest_by_run
                 def values(job_id: str) -> set[tuple[str, str]]:
                     return {(row["kind"], row["value"]) for row in db.execute(
                         "SELECT kind,value FROM observations WHERE job_id=?", (job_id,)
                     )}
                 previous, current = values(old["id"]), values(new["id"])
-                if previous != current:
-                    changes.append({
-                        "tool": tool, "target": target,
-                        "old_run": old["run_id"], "new_run": new["run_id"],
-                        "added": sorted(current - previous),
-                        "removed": sorted(previous - current),
-                    })
+                changes.append({
+                    "tool": tool, "target": target,
+                    "old_run": old["run_id"], "new_run": new["run_id"],
+                    "added": sorted(current - previous),
+                    "removed": sorted(previous - current),
+                })
         return changes
 
     def artifacts(self) -> list[dict]:
@@ -290,32 +319,46 @@ class Project:
         with self._connect() as db:
             return {row["observation_id"]: dict(row) for row in db.execute("SELECT * FROM reviews")}
 
-    def save_review(self, observation_id: int, status: str, note: str) -> None:
+    def saved_reviews(self) -> list[dict]:
+        with self._connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT reviews.observation_id,reviews.status,reviews.note,reviews.updated_at,"
+                "observations.target,observations.kind,observations.value,observations.run_id,jobs.tool "
+                "FROM reviews JOIN observations ON observations.id=reviews.observation_id "
+                "JOIN jobs ON jobs.id=observations.job_id "
+                "ORDER BY reviews.updated_at DESC, reviews.observation_id DESC"
+            )]
+
+    def save_review(self, observation_id: int, status: str, note: str) -> bool:
         if status not in {"indicio", "comprobado", "descartado"}:
             raise ValueError("Estado de hallazgo inválido.")
         with self._connect() as db:
-            db.execute(
-                "INSERT INTO reviews(observation_id,status,note) VALUES(?,?,?) "
-                "ON CONFLICT(observation_id) DO UPDATE SET status=excluded.status,note=excluded.note",
-                (observation_id, status, note),
+            result = db.execute(
+                "INSERT INTO reviews(observation_id,status,note,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(observation_id) DO UPDATE SET "
+                "status=excluded.status,note=excluded.note,updated_at=excluded.updated_at "
+                "WHERE reviews.status!=excluded.status OR reviews.note!=excluded.note",
+                (observation_id, status, note, now()),
             )
+            return result.rowcount > 0
 
     def export_report(self) -> Path:
-        observations = self.observations()
+        observations = self.grouped_observations()
         reviews = self.reviews()
         evidence: dict[str, list[str]] = {}
         for artifact in self.artifacts():
             evidence.setdefault(artifact["job_id"], []).append(artifact["path"])
         rows = []
         for row in observations:
-            review = reviews.get(row["id"], {})
+            review = next((reviews[oid] for oid in reversed(row["observation_ids"]) if oid in reviews), {})
+            paths = list(dict.fromkeys(path for job_id in row["job_ids"] for path in evidence.get(job_id, [])))
             links = " ".join(
                 f"<a href='../{quote(Path(path).as_posix())}'>{html.escape(Path(path).name)}</a>"
-                for path in evidence.get(row["job_id"], [])[:3]
+                for path in paths[:3]
             )
             rows.append("<tr>" + "".join(
                 f"<td>{html.escape(str(value))}</td>" for value in (
-                    row["target"], row["kind"], row["value"],
+                    row["target"], row["kind"], row["value"], row["count"],
                     review.get("status", "indicio"), review.get("note", ""),
                 )
             ) + f"<td>{links}</td></tr>")
@@ -329,7 +372,7 @@ class Project:
             "th{text-align:left;background:#eee}</style>"
             f"<h1>{html.escape(self.meta['name'])}</h1><p>Generado: {html.escape(now())}</p>"
             "<p>Los resultados automáticos requieren revisión humana. Los archivos originales están en este proyecto.</p>"
-            "<table><thead><tr><th>Objetivo</th><th>Tipo</th><th>Observación</th><th>Estado</th><th>Nota</th><th>Evidencia</th></tr></thead>"
+            "<table><thead><tr><th>Objetivo</th><th>Tipo</th><th>Observación</th><th>Veces</th><th>Estado</th><th>Nota</th><th>Evidencia</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></html>", encoding="utf-8",
         )
         return path

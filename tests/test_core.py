@@ -3,22 +3,26 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kaliscan_studio.commands import CommandSpec, build_command
+from kaliscan_studio.catalog import _package_versions, _version_label
 from kaliscan_studio.models import ScanOptions
 from kaliscan_studio.parsers import parse_nmap
 from kaliscan_studio.planner import PlanError, make_plan, normalize_targets
 from kaliscan_studio.projects import Project
 from kaliscan_studio.runner import ScanEngine
 from kaliscan_studio.suggestions import propose
+from kaliscan_studio.updater import reinstall_app
 
 
 NMAP_XML = """<?xml version="1.0"?>
@@ -61,6 +65,35 @@ class PlannerTests(unittest.TestCase):
         options = ScanOptions(target_mode="ip", targets=["192.0.2.10", "192.0.2.11"], exclusions=["192.0.2.11"])
         plan = make_plan(options)
         self.assertEqual([task.target for task in plan.tasks], ["192.0.2.10"])
+
+
+class EnvironmentTests(unittest.TestCase):
+    def test_missing_apt_package_does_not_show_localized_error_as_version(self):
+        def fake_run(args, **_kwargs):
+            if args[0] == "dpkg-query":
+                return SimpleNamespace(returncode=1, stdout="", stderr="no se ha encontrado ningún paquete")
+            return SimpleNamespace(returncode=0, stdout="testssl.sh:\n  Candidate: 3.2.4\n", stderr="")
+        with mock.patch("kaliscan_studio.catalog.shutil.which", return_value="/usr/bin/tool"), \
+             mock.patch("kaliscan_studio.catalog.subprocess.run", side_effect=fake_run):
+            installed, candidate, update = _package_versions("testssl.sh")
+        self.assertIsNone(installed)
+        self.assertEqual(candidate, "3.2.4")
+        self.assertFalse(update)
+
+    def test_version_label_removes_color_and_banner(self):
+        output = "  __  __\n\x1b[34m[INF]\x1b[0m Current Version: v2.16.0\n"
+        self.assertEqual(_version_label(output, None), "Current Version: v2.16.0")
+
+    def test_updater_reuses_pipx_recorded_source(self):
+        with mock.patch("kaliscan_studio.updater.sys.platform", "linux"), \
+             mock.patch("kaliscan_studio.updater.shutil.which", return_value="/usr/bin/pipx"), \
+             mock.patch("kaliscan_studio.updater.subprocess.run", return_value=SimpleNamespace(
+                 returncode=0, stdout="installed package kaliscan-studio 0.1.3", stderr="")) as run:
+            success, output = reinstall_app()
+        self.assertTrue(success)
+        self.assertIn("0.1.3", output)
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/pipx", "reinstall", "kaliscan-studio"])
+        self.assertFalse(run.call_args.kwargs.get("shell", False))
 
 
 class ProjectTests(unittest.TestCase):
@@ -138,6 +171,55 @@ class ProjectTests(unittest.TestCase):
             [(event["kind"], event["message"]) for event in reopened.run_events(run_id)],
             [("run", run_id), ("start", "nmap: 192.0.2.10")],
         )
+
+    def test_comparison_distinguishes_unchanged_results_and_grouped_report(self):
+        def add_run(value):
+            run_id = self.project.new_run(ScanOptions(target_mode="ip", targets=["192.0.2.10"]))
+            job_id = self.project.start_job(run_id, "nmap", "192.0.2.10", "Puertos", ["nmap"])
+            self.project.add_observation(run_id, job_id, "192.0.2.10", "port", value)
+            folder = self.project.output_dir(run_id, "nmap")
+            self.project.end_job(job_id, "complete", 0, folder / "out", folder / "err")
+            self.project.end_run(run_id, "complete")
+            return run_id, job_id
+
+        first, _ = add_run("80/tcp")
+        second, _ = add_run("80/tcp")
+        unchanged = self.project.compare_jobs()
+        self.assertEqual(len(unchanged), 1)
+        self.assertEqual((unchanged[0]["old_run"], unchanged[0]["new_run"]), (first, second))
+        self.assertEqual((unchanged[0]["added"], unchanged[0]["removed"]), ([], []))
+        groups = self.project.grouped_observations()
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["count"], 2)
+        self.assertTrue(self.project.save_review(groups[0]["id"], "comprobado", "Verificado"))
+        self.assertFalse(self.project.save_review(groups[0]["id"], "comprobado", "Verificado"))
+        self.assertEqual(len(self.project.saved_reviews()), 1)
+        report = self.project.export_report().read_text(encoding="utf-8")
+        self.assertEqual(report.count("<td>80/tcp</td>"), 1)
+        self.assertIn("Verificado", report)
+        third, _ = add_run("443/tcp")
+        changed = self.project.compare_jobs()[0]
+        self.assertEqual(changed["new_run"], third)
+        self.assertEqual(changed["added"], [("port", "443/tcp")])
+        self.assertEqual(changed["removed"], [("port", "80/tcp")])
+
+    def test_old_project_gains_review_timestamp_column(self):
+        legacy = self.temp_root / "legacy"
+        legacy.mkdir()
+        (legacy / "project.json").write_text(json.dumps({"name": "Anterior", "created_at": "2026-10-01"}), encoding="utf-8")
+        db = sqlite3.connect(legacy / "project.sqlite3")
+        try:
+            db.execute("CREATE TABLE reviews (observation_id INTEGER PRIMARY KEY, status TEXT, note TEXT)")
+            db.commit()
+        finally:
+            db.close()
+        Project(legacy)
+        db = sqlite3.connect(legacy / "project.sqlite3")
+        try:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(reviews)")}
+        finally:
+            db.close()
+        self.assertIn("updated_at", columns)
 
 
 if __name__ == "__main__":

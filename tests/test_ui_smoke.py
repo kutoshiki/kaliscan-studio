@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 try:
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QPushButton
     from kaliscan_studio.app import MainWindow
 except ImportError:
     QApplication = None
@@ -37,6 +37,9 @@ class UISmokeTests(unittest.TestCase):
             window.open_project(project.root)
             self.assertEqual(window.tabs.count(), 6)
             self.assertEqual(window.plan_form.target_mode.currentData(), "ip")
+            button_labels = {button.text() for button in window.findChildren(QPushButton)}
+            self.assertIn("Actualizar KaliScan", button_labels)
+            self.assertIn("Ver revisiones guardadas", button_labels)
             window.close()
             app.processEvents()
 
@@ -65,6 +68,8 @@ class UISmokeTests(unittest.TestCase):
             result = project.output_dir(run_id, "nmap") / "scan.txt"
             result.write_text("resultado", encoding="utf-8")
             project.add_artifact(job_id, result)
+            project.add_observation(run_id, job_id, "192.0.2.10", "port", "80/tcp")
+            project.add_observation(run_id, job_id, "192.0.2.10", "port", "80/tcp")
             worker = mock.Mock()
             worker.project = project
             worker.isRunning.return_value = True
@@ -77,6 +82,12 @@ class UISmokeTests(unittest.TestCase):
             self.assertIn("Escaneo en curso", window.progress_label.text())
             self.assertIn("nmap: 192.0.2.10", window.progress_log.toPlainText())
             self.assertTrue(window.cancel_button.isEnabled())
+            self.assertEqual(window.report_table.rowCount(), 1)
+            self.assertEqual(window.report_table.item(0, 3).text(), "2")
+            window.report_table.cellWidget(0, 4).setCurrentText("comprobado")
+            window.report_table.item(0, 5).setText("Revisado")
+            self.assertEqual(window._store_reviews(), 1)
+            self.assertEqual(project.saved_reviews()[0]["note"], "Revisado")
             with mock.patch("kaliscan_studio.app.QDesktopServices") as services:
                 services.openUrl.return_value = True
                 window.results_table.itemClicked.emit(window.results_table.item(0, 0))
