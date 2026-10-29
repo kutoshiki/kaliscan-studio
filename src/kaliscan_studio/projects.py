@@ -161,7 +161,68 @@ class Project:
 
     def _touch_execution(self) -> None:
         self.meta["last_executed_at"] = now()
-        _atomic_json(se…733 tokens truncated…ct() as db:
+        _atomic_json(self.root / "project.json", self.meta)
+        remember_project(self.root)
+
+    def output_dir(self, run_id: str, tool: str) -> Path:
+        date = run_id[:8]
+        folder = self.root / f"{date[:4]}-{date[4:6]}-{date[6:8]}" / safe_name(tool) / run_id
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def start_job(self, run_id: str, tool: str, target: str, reason: str, command: list[str]) -> str:
+        job_id = uuid.uuid4().hex
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO jobs (id,run_id,tool,target,reason,started_at,status,command_json) VALUES (?,?,?,?,?,?,'running',?)",
+                (job_id, run_id, tool, target, reason, now(), json.dumps(command, ensure_ascii=False)),
+            )
+        return job_id
+
+    def end_job(self, job_id: str, status: str, exit_code: int | None, stdout_path: Path, stderr_path: Path) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE jobs SET ended_at=?,status=?,exit_code=?,stdout_path=?,stderr_path=? WHERE id=?",
+                (now(), status, exit_code, self.relative(stdout_path), self.relative(stderr_path), job_id),
+            )
+
+    def add_artifact(self, job_id: str, path: Path) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO artifacts (job_id,path,format) VALUES (?,?,?)",
+                (job_id, self.relative(path), path.suffix.lstrip(".").lower()),
+            )
+
+    def add_observation(self, run_id: str, job_id: str, target: str, kind: str, value: str, detail: dict | None = None) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO observations (run_id,job_id,target,kind,value,detail_json) VALUES (?,?,?,?,?,?)",
+                (run_id, job_id, target, kind, value, json.dumps(detail or {}, ensure_ascii=False)),
+            )
+
+    def relative(self, path: Path) -> str:
+        return str(path.resolve().relative_to(self.root))
+
+    def runs(self) -> list[dict]:
+        with self._connect() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM runs ORDER BY started_at DESC, rowid DESC")]
+
+    def jobs(self, run_id: str | None = None) -> list[dict]:
+        with self._connect() as db:
+            query = "SELECT * FROM jobs"
+            params: tuple = ()
+            if run_id:
+                query += " WHERE run_id=?"
+                params = (run_id,)
+            query += " ORDER BY started_at, rowid"
+            return [dict(row) for row in db.execute(query, params)]
+
+    def observations(self) -> list[dict]:
+        with self._connect() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM observations ORDER BY id")]
+
+    def observations_for_run(self, run_id: str) -> list[dict]:
+        with self._connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM observations WHERE run_id=? ORDER BY id", (run_id,))]
 
     def compare_jobs(self) -> list[dict]:
