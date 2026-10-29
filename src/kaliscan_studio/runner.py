@@ -211,6 +211,7 @@ class ScanEngine:
         options = ScanOptions.from_dict(base_options.to_dict())
         options.targets = [suggestion.target]
         run_id = self.project.new_run(options, kind="suggestion")
+        self.event("run", run_id)
         task = PlannedTask(suggestion.tool, suggestion.target, suggestion.reason)
         status = "failed"
         try:

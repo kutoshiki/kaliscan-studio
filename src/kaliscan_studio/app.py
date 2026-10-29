@@ -6,6 +6,7 @@ import json
 import html
 import os
 import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -34,6 +35,9 @@ QPushButton, QComboBox, QLineEdit, QTextEdit, QListWidget, QTableWidget, QTabWid
 }
 QPushButton:hover { background:#374151; }
 QPushButton:disabled { color:#6b7280; }
+QPushButton#primaryAction { background:#2563eb; color:#fff; border-color:#1d4ed8; font-weight:700; }
+QPushButton#primaryAction:hover { background:#1d4ed8; }
+QPushButton#primaryAction:disabled { background:#374151; color:#9ca3af; }
 QGroupBox { border:1px solid #374151; border-radius:8px; margin-top:12px; padding:10px; font-weight:600; }
 QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }
 QTabBar::tab { background:#1f2937; color:#e5e7eb; padding:9px 14px; margin-right:2px; }
@@ -48,11 +52,20 @@ QPushButton, QComboBox, QLineEdit, QTextEdit, QListWidget, QTableWidget, QTabWid
 }
 QPushButton:hover { background:#e2e8f0; }
 QPushButton:disabled { color:#94a3b8; }
+QPushButton#primaryAction { background:#2563eb; color:#fff; border-color:#1d4ed8; font-weight:700; }
+QPushButton#primaryAction:hover { background:#1d4ed8; }
+QPushButton#primaryAction:disabled { background:#cbd5e1; color:#64748b; }
 QGroupBox { border:1px solid #cbd5e1; border-radius:8px; margin-top:12px; padding:10px; font-weight:600; }
 QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }
 QTabBar::tab { background:#e2e8f0; color:#111827; padding:9px 14px; margin-right:2px; }
 QTabBar::tab:selected { background:#bfdbfe; }
 QHeaderView::section { background:#e2e8f0; color:#111827; padding:6px; }
+"""
+
+SYSTEM = """
+QPushButton#primaryAction { background:#2563eb; color:#fff; border:1px solid #1d4ed8; border-radius:6px; font-weight:700; }
+QPushButton#primaryAction:hover { background:#1d4ed8; }
+QPushButton#primaryAction:disabled { background:#64748b; color:#e5e7eb; }
 """
 
 
@@ -64,11 +77,23 @@ class ScanWorker(QThread):
                  suggestion: Suggestion | None = None, options: ScanOptions | None = None,
                  resume_run_id: str | None = None):
         super().__init__()
-        self.engine = ScanEngine(project, paths, lambda kind, message: self.event.emit(kind, message))
+        self.project = project
+        self.run_id: str | None = None
+        self.engine = ScanEngine(project, paths, self._on_engine_event)
         self.plan = plan
         self.suggestion = suggestion
         self.options = options
         self.resume_run_id = resume_run_id
+
+    def _on_engine_event(self, kind: str, message: str) -> None:
+        if kind == "run":
+            self.run_id = message
+        if self.run_id:
+            try:
+                self.project.add_run_event(self.run_id, kind, message)
+            except (OSError, sqlite3.Error):
+                pass
+        self.event.emit(kind, message)
 
     def run(self) -> None:
         try:
@@ -80,7 +105,7 @@ class ScanWorker(QThread):
                 raise RuntimeError("No hay un plan para ejecutar.")
             self.finished_scan.emit(run_id)
         except Exception as exc:  # El error debe quedar visible; la ventana no debe cerrarse.
-            self.event.emit("error", f"Error del motor: {exc}")
+            self._on_engine_event("error", f"Error del motor: {exc}")
             self.finished_scan.emit("")
 
     def cancel(self) -> None:
@@ -129,7 +154,7 @@ class MainWindow(QMainWindow):
     def apply_theme(self) -> None:
         mode = self.theme.currentData()
         self.settings.setValue("theme", mode)
-        QApplication.instance().setStyleSheet(DARK if mode == "dark" else LIGHT if mode == "light" else "")
+        QApplication.instance().setStyleSheet(DARK if mode == "dark" else LIGHT if mode == "light" else SYSTEM)
 
     def _build_home(self) -> QWidget:
         widget = QWidget()
@@ -210,14 +235,18 @@ class MainWindow(QMainWindow):
             self.open_project(Path(path))
 
     def open_project(self, path: Path) -> None:
-        if self.scan_worker and self.scan_worker.isRunning():
-            QMessageBox.information(self, "Escaneo en curso", "Espera a que termine o cancela el escaneo actual.")
-            return
         try:
-            self.project = Project(path)
+            project = Project(path)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Abrir proyecto", str(exc))
             return
+        if self.project_page and self.project and self.project.root == project.root:
+            self.stack.setCurrentWidget(self.project_page)
+            self.refresh_project()
+            if self._active_for_project():
+                self.tabs.setCurrentIndex(1)
+            return
+        self.project = project
         if self.project_page:
             self.stack.removeWidget(self.project_page)
             self.project_page.deleteLater()
@@ -225,6 +254,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.project_page)
         self.stack.setCurrentWidget(self.project_page)
         self.refresh_project()
+        if self._active_for_project():
+            self.tabs.setCurrentIndex(1)
 
     def _build_project(self) -> QWidget:
         assert self.project
@@ -233,6 +264,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel(f"<h1>{html.escape(self.project.meta['name'])}</h1>"))
         layout.addWidget(QLabel(str(self.project.root)))
         self.resume_button = QPushButton("Reanudar tareas pendientes de la última ejecución")
+        self.resume_button.setMinimumHeight(40)
         self.resume_button.clicked.connect(self.resume_latest)
         layout.addWidget(self.resume_button)
         self.tabs = QTabWidget()
@@ -250,6 +282,7 @@ class MainWindow(QMainWindow):
         self.progress_log.setReadOnly(True)
         progress.addWidget(self.progress_log)
         self.cancel_button = QPushButton("Cancelar ejecución")
+        self.cancel_button.setMinimumHeight(42)
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel_scan)
         progress.addWidget(self.cancel_button)
@@ -257,11 +290,11 @@ class MainWindow(QMainWindow):
 
         results_page = QWidget()
         results = QVBoxLayout(results_page)
-        results.addWidget(QLabel("Doble clic en un archivo para abrirlo."))
+        results.addWidget(QLabel("Haz clic en un resultado para abrir su archivo."))
         self.results_table = QTableWidget(0, 5)
         self.results_table.setHorizontalHeaderLabels(["Fecha / ejecución", "Herramienta", "Objetivo", "Estado", "Archivo o comando"])
         self.results_table.horizontalHeader().setStretchLastSection(True)
-        self.results_table.itemDoubleClicked.connect(self.open_result_file)
+        self.results_table.itemClicked.connect(self.open_result_file)
         results.addWidget(self.results_table)
         self.tabs.addTab(results_page, "Resultados")
 
@@ -280,7 +313,10 @@ class MainWindow(QMainWindow):
         next_layout.addWidget(self.suggestions_list)
         next_actions = QHBoxLayout()
         run = QPushButton("Ejecutar paso elegido")
+        run.setObjectName("primaryAction")
         dismiss = QPushButton("Descartar propuesta")
+        run.setMinimumHeight(42)
+        dismiss.setMinimumHeight(42)
         run.clicked.connect(self.start_suggestion)
         dismiss.clicked.connect(self.dismiss_suggestion)
         next_actions.addWidget(run)
@@ -299,6 +335,8 @@ class MainWindow(QMainWindow):
         report_actions = QHBoxLayout()
         save = QPushButton("Guardar revisión")
         export = QPushButton("Exportar informe HTML")
+        save.setMinimumHeight(42)
+        export.setMinimumHeight(42)
         save.clicked.connect(self.save_reviews)
         export.clicked.connect(self.export_report)
         report_actions.addWidget(save)
@@ -312,11 +350,14 @@ class MainWindow(QMainWindow):
         if not self.project or not self.project_page:
             return
         runs = self.project.runs()
-        self.resume_button.setEnabled(bool(runs and runs[0]["kind"] == "plan" and runs[0]["status"] in {"running", "partial", "cancelled", "failed"}))
+        self.resume_button.setEnabled(bool(runs and runs[0]["kind"] == "plan" and runs[0]["status"] in {"running", "partial", "cancelled", "failed"} and not self._busy()))
+        self.plan_form.setEnabled(not self._busy())
+        self._refresh_progress(runs)
         self.results_table.setRowCount(0)
         artifacts = self.project.artifacts()
+        jobs_by_id = {job["id"]: job for job in self.project.jobs()}
         for artifact in artifacts:
-            job = next((row for row in self.project.jobs() if row["id"] == artifact["job_id"]), None)
+            job = jobs_by_id.get(artifact["job_id"])
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
             values = (artifact["run_id"], artifact["tool"], artifact["target"], job["status"] if job else "", artifact["path"])
@@ -360,6 +401,39 @@ class MainWindow(QMainWindow):
             self.report_table.setItem(row, 4, note)
         self.report_table.resizeColumnsToContents()
 
+    def _refresh_progress(self, runs: list[dict] | None = None) -> None:
+        if not self.project:
+            return
+        runs = self.project.runs() if runs is None else runs
+        active = self._active_for_project()
+        self.cancel_button.setEnabled(active)
+        if not runs:
+            self.progress_label.setText("No hay un escaneo en curso.")
+            self.progress_log.clear()
+            return
+        latest = runs[0]
+        jobs = [job for job in self.project.jobs(latest["id"]) if job["tool"] != "resumen"]
+        counts = {status: sum(job["status"] == status for job in jobs)
+                  for status in ("complete", "running", "failed", "cancelled")}
+        summary = (f"{counts['complete']} completadas · {counts['running']} en curso · "
+                   f"{counts['failed']} fallidas · {counts['cancelled']} canceladas")
+        if active and latest["status"] == "running":
+            headline = "Escaneo en curso"
+        elif latest["status"] == "running":
+            headline = "Ejecución interrumpida; puedes reanudar las tareas pendientes"
+        else:
+            labels = {"complete": "completa", "partial": "parcial", "cancelled": "cancelada", "failed": "fallida"}
+            headline = "Última ejecución " + labels.get(latest["status"], latest["status"])
+        self.progress_label.setText(f"{headline} · {summary}")
+        events = self.project.run_events(latest["id"])
+        if events:
+            lines = [f"{entry['created_at'][11:19]}  [{entry['kind']}] {entry['message']}" for entry in events]
+        else:
+            lines = [f"{job['started_at'][11:19]}  {job['tool']}: {job['target']} · {job['status']}" for job in jobs]
+        self.progress_log.setPlainText("\n".join(lines))
+        scrollbar = self.progress_log.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
     def open_result_file(self, item: QTableWidgetItem) -> None:
         if not self.project:
             return
@@ -368,7 +442,10 @@ class MainWindow(QMainWindow):
         if file_item:
             path = (self.project.root / file_item.text()).resolve()
             if path.is_relative_to(self.project.root) and path.is_file():
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                    QMessageBox.warning(self, "Abrir resultado", f"No se pudo abrir el archivo:\n{path}")
+            else:
+                QMessageBox.warning(self, "Abrir resultado", "El archivo ya no está disponible en el proyecto.")
 
     def _tool_paths(self) -> dict[str, str]:
         return {key: str(self.settings.value(f"tool/{key}/path", "")) for key in TOOLS}
@@ -432,28 +509,48 @@ class MainWindow(QMainWindow):
     def _busy(self) -> bool:
         return bool(self.scan_worker and self.scan_worker.isRunning())
 
+    def _active_for_project(self) -> bool:
+        return bool(self.project and self._busy() and self.scan_worker
+                    and self.scan_worker.project.root == self.project.root)
+
     def _launch(self, worker: ScanWorker) -> None:
         self.scan_worker = worker
         worker.event.connect(self.scan_event)
         worker.finished_scan.connect(self.scan_finished)
+        worker.finished.connect(self.scan_thread_finished)
         self.progress_log.clear()
-        self.progress_label.setText("Escaneo en curso…")
+        self.progress_label.setText("Preparando el escaneo…")
         self.cancel_button.setEnabled(True)
         self.plan_form.setEnabled(False)
         self.tabs.setCurrentIndex(1)
         worker.start()
 
     def scan_event(self, kind: str, message: str) -> None:
-        self.progress_log.append(f"[{kind}] {message}")
-        if kind in {"start", "done", "error"}:
-            self.progress_label.setText(message)
+        source = self.sender()
+        if source is not self.scan_worker:
+            return
+        if kind in {"run", "finished"}:
+            self.refresh_home()
+        if self.project and self.project.root == source.project.root and self.project_page:
+            if kind in {"done", "error", "finished"}:
+                self.refresh_project()
+            else:
+                self._refresh_progress()
 
     def scan_finished(self, run_id: str) -> None:
-        self.cancel_button.setEnabled(False)
-        self.plan_form.setEnabled(True)
-        self.progress_label.setText("Ejecución terminada." if run_id else "La ejecución terminó con un error del motor.")
+        source = self.sender()
+        if source is not self.scan_worker:
+            return
         self.refresh_project()
+        if not run_id and self.project and self.project.root == source.project.root:
+            self.progress_label.setText("La ejecución terminó con un error del motor.")
         self.refresh_home()
+
+    def scan_thread_finished(self) -> None:
+        source = self.sender()
+        if source is self.scan_worker:
+            self.refresh_project()
+            self.refresh_home()
 
     def cancel_scan(self) -> None:
         if self.scan_worker and self.scan_worker.isRunning():

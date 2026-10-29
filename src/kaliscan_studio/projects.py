@@ -106,6 +106,13 @@ class Project:
                     stdout_path TEXT,
                     stderr_path TEXT
                 );
+                CREATE TABLE IF NOT EXISTS run_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    created_at TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    message TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS artifacts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     job_id TEXT NOT NULL REFERENCES jobs(id),
@@ -128,6 +135,7 @@ class Project:
                 );
                 CREATE INDEX IF NOT EXISTS idx_obs_target ON observations(target, kind);
                 CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(run_id);
+                CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
             """)
 
             columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)")}
@@ -216,6 +224,19 @@ class Project:
                 params = (run_id,)
             query += " ORDER BY started_at, rowid"
             return [dict(row) for row in db.execute(query, params)]
+
+    def add_run_event(self, run_id: str, kind: str, message: str) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO run_events(run_id,created_at,kind,message) VALUES(?,?,?,?)",
+                (run_id, now(), kind, message),
+            )
+
+    def run_events(self, run_id: str) -> list[dict]:
+        with self._connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT * FROM run_events WHERE run_id=? ORDER BY id", (run_id,)
+            )]
 
     def observations(self) -> list[dict]:
         with self._connect() as db:

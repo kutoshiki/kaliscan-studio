@@ -129,6 +129,16 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(len(completed), 2)
         self.assertEqual(self.project.runs()[0]["status"], "complete")
 
+    def test_progress_events_survive_reopening_project(self):
+        run_id = self.project.new_run(ScanOptions(target_mode="ip", targets=["192.0.2.10"]))
+        self.project.add_run_event(run_id, "run", run_id)
+        self.project.add_run_event(run_id, "start", "nmap: 192.0.2.10")
+        reopened = Project(self.project.root)
+        self.assertEqual(
+            [(event["kind"], event["message"]) for event in reopened.run_events(run_id)],
+            [("run", run_id), ("start", "nmap: 192.0.2.10")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

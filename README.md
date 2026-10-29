@@ -35,6 +35,8 @@ La instalación de la aplicación usa `pipx`; las herramientas de escaneo se ges
 3. Elige IP o web e introduce uno o varios objetivos y, si hace falta, exclusiones. Configura las pruebas y revisa el plan.
 4. Tras la ejecución, abre **Resultados**, **Cambios**, **Siguientes pasos** e **Informe**. Puedes cerrar la aplicación y continuar el mismo proyecto después. Los planes interrumpidos se reanudan sin repetir tareas completadas.
 
+Mientras KaliScan Studio permanezca abierto, puedes volver a **Inicio** o abrir otro proyecto sin detener el escaneo activo. Al regresar al proyecto, **Progreso** muestra el estado y recupera el historial guardado. En **Resultados**, un clic en cualquier fila abre el archivo correspondiente.
+
 La selección de formato JSON, CSV o HTML genera un resumen normalizado. Los archivos originales de las herramientas siempre se conservan. Los resultados vacíos se guardan como archivos vacíos cuando la herramienta no emitió hallazgos.
 
 ## Herramientas integradas
