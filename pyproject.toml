@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kaliscan-studio"
-version = "0.1.3"
+version = "0.1.4"
 description = "Interfaz local para escaneos guiados en Kali Linux"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "KaliScan Studio contributors"}]
-dependencies = ["PySide6>=6.6,<7"]
+dependencies = ["PySide6>=6.6,<7", "Send2Trash>=1.8,<3"]
 
 [project.scripts]
 kaliscan-studio = "kaliscan_studio.app:main"

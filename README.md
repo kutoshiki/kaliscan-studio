@@ -49,9 +49,11 @@ También puedes pulsar **Actualizar KaliScan** en la esquina superior derecha. L
 
 Mientras KaliScan Studio permanezca abierto, puedes volver a **Inicio** o abrir otro proyecto sin detener el escaneo activo. Al regresar al proyecto, **Progreso** muestra el estado y recupera el historial guardado. En **Resultados**, un clic en cualquier fila abre el archivo correspondiente.
 
+En **Inicio**, selecciona un proyecto y pulsa **Cambiar nombre** para modificar el nombre que muestra KaliScan Studio; la ruta de la carpeta no cambia. **Eliminar proyecto** pide confirmación y envía la carpeta completa, incluidos resultados e informes, a la papelera. No se puede cambiar el nombre ni eliminar un proyecto mientras su escaneo está activo.
+
 **Cambios** compara las dos ejecuciones completas más recientes de una misma herramienta y objetivo. Muestra las observaciones añadidas y eliminadas, o indica expresamente que no hubo diferencias. Si aún falta una segunda ejecución comparable, lo explica.
 
-En **Informe**, las observaciones repetidas aparecen agrupadas con un contador; los archivos originales permanecen separados. Cambia el estado o la nota y pulsa **Guardar revisión**. **Ver revisiones guardadas** muestra las decisiones persistidas, con fecha, objetivo y ejecución. **Exportar informe HTML** incluye esas revisiones y la evidencia.
+En **Informe**, las observaciones repetidas aparecen agrupadas con el contador **Veces**; los archivos originales permanecen separados. **Indicio** significa pendiente de verificar, **comprobado** es una confirmación manual y **descartado** indica que se rechazó el hallazgo. Cambia el estado o la nota y pulsa **Guardar revisión**. **Ver revisiones guardadas** muestra las decisiones persistidas, con fecha, objetivo y ejecución. **Exportar informe HTML** incluye esas revisiones y la evidencia.
 
 La selección de formato JSON, CSV o HTML genera un resumen normalizado. Los archivos originales de las herramientas siempre se conservan. Los resultados vacíos se guardan como archivos vacíos cuando la herramienta no emitió hallazgos.
 

@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import quote
 
+from send2trash import send2trash
+
 from .models import ScanOptions
 
 
@@ -65,6 +67,27 @@ class Project:
         project = cls(root)
         remember_project(project.root)
         return project
+
+    def rename(self, name: str) -> None:
+        clean = name.strip()
+        if not clean:
+            raise ValueError("El proyecto necesita un nombre.")
+        updated = {**self.meta, "name": clean}
+        _atomic_json(self.root / "project.json", updated)
+        self.meta = updated
+
+    def move_to_trash(self) -> None:
+        home = Path.home().resolve()
+        if self.root == home or self.root in home.parents:
+            raise ValueError("No se puede enviar una carpeta principal del sistema a la papelera.")
+        if not (self.root / "project.json").is_file() or not self.db_path.is_file():
+            raise ValueError("La carpeta ya no contiene un proyecto KaliScan Studio válido.")
+        send2trash(str(self.root))
+        try:
+            forget_project(self.root)
+        except OSError:
+            # La lista de recientes también oculta proyectos cuya carpeta ya no existe.
+            pass
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -435,3 +458,13 @@ def recent_projects() -> list[dict]:
     except (ValueError, OSError):
         return []
     return [item for item in items if Path(item.get("path", "")).joinpath("project.json").is_file()]
+
+
+def forget_project(root: Path) -> None:
+    registry = data_dir() / "recent.json"
+    try:
+        items = json.loads(registry.read_text(encoding="utf-8")) if registry.is_file() else []
+    except (ValueError, OSError):
+        items = []
+    path = str(root.resolve())
+    _atomic_json(registry, [item for item in items if item.get("path") != path])

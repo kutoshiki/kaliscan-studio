@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
     QProgressDialog, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget,
@@ -181,10 +181,18 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         create = QPushButton("+ Crear proyecto")
         open_existing = QPushButton("Abrir carpeta de proyecto")
+        self.rename_project_button = QPushButton("Cambiar nombre")
+        self.delete_project_button = QPushButton("Eliminar proyecto")
         create.clicked.connect(self.create_project)
         open_existing.clicked.connect(self.open_existing)
+        self.rename_project_button.clicked.connect(self.rename_selected_project)
+        self.delete_project_button.clicked.connect(self.delete_selected_project)
+        self.rename_project_button.setEnabled(False)
+        self.delete_project_button.setEnabled(False)
         actions.addWidget(create)
         actions.addWidget(open_existing)
+        actions.addWidget(self.rename_project_button)
+        actions.addWidget(self.delete_project_button)
         actions.addStretch()
         layout.addLayout(actions)
         self.search = QLineEdit()
@@ -193,10 +201,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.search)
         self.recent = QListWidget()
         self.recent.itemDoubleClicked.connect(self.open_recent)
+        self.recent.currentItemChanged.connect(lambda _current, _previous: self._update_project_actions())
         layout.addWidget(self.recent)
         return widget
 
     def refresh_home(self) -> None:
+        selected = self.recent.currentItem()
+        selected_path = selected.data(Qt.UserRole) if selected else None
         self.recent.clear()
         projects: list[tuple[str, Project, str]] = []
         for item in recent_projects():
@@ -223,11 +234,81 @@ class MainWindow(QMainWindow):
             row = QListWidgetItem(display)
             row.setData(Qt.UserRole, str(project.root))
             self.recent.addItem(row)
+            if selected_path == str(project.root):
+                self.recent.setCurrentItem(row)
         if not self.recent.count():
             self.recent.addItem("No hay proyectos recientes. Crea el primero con el botón superior.")
+        self._update_project_actions()
+
+    def _selected_project_path(self) -> Path | None:
+        item = self.recent.currentItem()
+        path = item.data(Qt.UserRole) if item else None
+        return Path(path) if path else None
+
+    def _update_project_actions(self) -> None:
+        enabled = self._selected_project_path() is not None
+        self.rename_project_button.setEnabled(enabled)
+        self.delete_project_button.setEnabled(enabled)
+
+    def rename_selected_project(self) -> None:
+        path = self._selected_project_path()
+        if path is None:
+            return
+        if self._busy() and self.scan_worker and self.scan_worker.project.root == path.resolve():
+            QMessageBox.information(self, "Cambiar nombre", "Espera a que termine el escaneo de este proyecto.")
+            return
+        try:
+            project = self.project if self.project and self.project.root == path.resolve() else Project(path)
+            name, okay = QInputDialog.getText(
+                self, "Cambiar nombre", "Nuevo nombre del proyecto (la carpeta conservará su ruta):",
+                text=project.meta["name"],
+            )
+            if not okay:
+                return
+            project.rename(name)
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Cambiar nombre", str(exc))
+            return
+        if self.project and self.project.root == project.root:
+            self.project.meta["name"] = project.meta["name"]
+            if self.project_page:
+                self.project_title.setText(f"<h1>{html.escape(project.meta['name'])}</h1>")
+        self.refresh_home()
+
+    def delete_selected_project(self) -> None:
+        path = self._selected_project_path()
+        if path is None:
+            return
+        if self._busy() and self.scan_worker and self.scan_worker.project.root == path.resolve():
+            QMessageBox.information(self, "Eliminar proyecto", "Espera a que termine el escaneo de este proyecto.")
+            return
+        try:
+            project = Project(path)
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Eliminar proyecto", str(exc))
+            return
+        answer = QMessageBox.question(
+            self, "Eliminar proyecto",
+            f"¿Enviar a la papelera el proyecto «{project.meta['name']}» y todos sus archivos?\n\n"
+            f"Carpeta: {project.root}\n\nIncluye resultados, revisiones e informes. Podrás restaurarlo desde la papelera.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            project.move_to_trash()
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Eliminar proyecto", f"No se pudo enviar a la papelera:\n{exc}")
+            return
+        if self.project and self.project.root == project.root:
+            self.project = None
+            if self.project_page:
+                self.stack.removeWidget(self.project_page)
+                self.project_page.deleteLater()
+                self.project_page = None
+        self.refresh_home()
 
     def create_project(self) -> None:
-        from PySide6.QtWidgets import QInputDialog
         name, okay = QInputDialog.getText(self, "Nuevo proyecto", "Nombre del proyecto:")
         if not okay or not name.strip():
             return
@@ -278,7 +359,8 @@ class MainWindow(QMainWindow):
         assert self.project
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel(f"<h1>{html.escape(self.project.meta['name'])}</h1>"))
+        self.project_title = QLabel(f"<h1>{html.escape(self.project.meta['name'])}</h1>")
+        layout.addWidget(self.project_title)
         layout.addWidget(QLabel(str(self.project.root)))
         self.resume_button = QPushButton("Reanudar tareas pendientes de la última ejecución")
         self.resume_button.setMinimumHeight(40)
@@ -344,7 +426,10 @@ class MainWindow(QMainWindow):
 
         report_page = QWidget()
         report_layout = QVBoxLayout(report_page)
-        report_layout.addWidget(QLabel("Revisa las observaciones y registra si cada una es un indicio, está comprobada o fue descartada."))
+        report_layout.addWidget(QLabel(
+            "Indicio: pendiente de verificar · Comprobado: confirmado manualmente · Descartado: no confirmado. "
+            "Veces indica cuántas veces apareció la observación."
+        ))
         self.report_table = QTableWidget(0, 6)
         self.report_table.setHorizontalHeaderLabels(["Objetivo", "Tipo", "Observación", "Veces", "Estado", "Nota"])
         self.report_table.horizontalHeader().setStretchLastSection(True)

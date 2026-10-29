@@ -19,7 +19,7 @@ from kaliscan_studio.catalog import _package_versions, _version_label
 from kaliscan_studio.models import ScanOptions
 from kaliscan_studio.parsers import parse_nmap
 from kaliscan_studio.planner import PlanError, make_plan, normalize_targets
-from kaliscan_studio.projects import Project
+from kaliscan_studio.projects import Project, recent_projects
 from kaliscan_studio.runner import ScanEngine
 from kaliscan_studio.suggestions import propose
 from kaliscan_studio.updater import reinstall_app
@@ -114,6 +114,24 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual([value for kind, value, _ in observations if kind == "port"], ["80/tcp", "443/tcp", "445/tcp"])
         reopened = Project(self.project.root)
         self.assertEqual(reopened.meta["name"], "Práctica de red")
+
+    def test_rename_keeps_folder_and_trash_removes_recent_entry(self):
+        original = self.project.root
+        self.project.rename("Nuevo nombre")
+        self.assertEqual(self.project.root, original)
+        self.assertEqual(Project(original).meta["name"], "Nuevo nombre")
+        self.assertEqual(len(recent_projects()), 1)
+        with self.assertRaisesRegex(ValueError, "necesita un nombre"):
+            self.project.rename("   ")
+        self.assertEqual(Project(original).meta["name"], "Nuevo nombre")
+
+        moved = self.temp_root / "restaurable"
+        with mock.patch("kaliscan_studio.projects.send2trash", side_effect=lambda path: Path(path).rename(moved)) as trash:
+            self.project.move_to_trash()
+        trash.assert_called_once_with(str(original))
+        self.assertFalse(original.exists())
+        self.assertTrue((moved / "project.json").is_file())
+        self.assertEqual(recent_projects(), [])
 
     def test_engine_persists_outputs_and_proposals(self):
         plan = make_plan(ScanOptions(target_mode="ip", targets=["192.0.2.10"], formats=["json", "csv"]))

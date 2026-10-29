@@ -19,6 +19,41 @@ except ImportError:
 
 @unittest.skipUnless(QApplication is not None, "PySide6 no está instalado en este equipo")
 class UISmokeTests(unittest.TestCase):
+    def test_project_can_be_renamed_and_sent_to_trash_from_home(self):
+        from kaliscan_studio.projects import Project
+        import tempfile
+        import uuid
+        import shutil
+
+        base = Path(os.environ.get("KALISCAN_TEST_TMP", tempfile.gettempdir())).resolve()
+        root = base / ("kaliscan-ui-test-" + uuid.uuid4().hex)
+        root.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(root) if root.is_relative_to(base) else None)
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(root), "XDG_CONFIG_HOME": str(root)}):
+            app = QApplication.instance() or QApplication([])
+            with mock.patch("kaliscan_studio.app.QTimer.singleShot"):
+                window = MainWindow()
+            project = Project.create(root, "Original")
+            window.open_project(project.root)
+            window.go_home()
+            window.recent.setCurrentRow(0)
+            self.assertTrue(window.rename_project_button.isEnabled())
+            with mock.patch("kaliscan_studio.app.QInputDialog.getText", return_value=("Renombrado", True)):
+                window.rename_selected_project()
+            self.assertEqual(Project(project.root).meta["name"], "Renombrado")
+            self.assertIn("Renombrado", window.project_title.text())
+
+            trash_path = root / "en-papelera"
+            from PySide6.QtWidgets import QMessageBox
+            with mock.patch("kaliscan_studio.app.QMessageBox.question", return_value=QMessageBox.Yes), \
+                 mock.patch("kaliscan_studio.projects.send2trash", side_effect=lambda path: Path(path).rename(trash_path)):
+                window.delete_selected_project()
+            self.assertFalse(project.root.exists())
+            self.assertIsNone(window.project)
+            self.assertFalse(window.delete_project_button.isEnabled())
+            window.close()
+            app.processEvents()
+
     def test_window_and_project_tabs_construct(self):
         from kaliscan_studio.projects import Project
         import tempfile
