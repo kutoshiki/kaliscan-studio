@@ -11,5 +11,5 @@ if ! command -v pipx >/dev/null 2>&1; then
   exit 1
 fi
 
-pipx install --force .
+pipx install .
 echo "Instalado. Inicia la aplicación con: kaliscan-studio"

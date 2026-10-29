@@ -28,6 +28,16 @@ pipx install git+https://github.com/kutoshiki/kaliscan-studio.git
 
 La instalación de la aplicación usa `pipx`; las herramientas de escaneo se gestionan con paquetes de Kali. Para que los botones de instalación y actualización funcionen desde la interfaz, Kali debe disponer de `pkexec` y un agente gráfico de autenticación. Si faltan, la pantalla muestra las herramientas necesarias para instalarlas desde una terminal.
 
+## Actualizar la aplicación
+
+Cierra KaliScan Studio y ejecuta:
+
+```bash
+pipx reinstall kaliscan-studio
+```
+
+`pipx` reutiliza el origen de instalación que guardó, incluido este repositorio de GitHub. No hace falta borrar el entorno virtual manualmente. Los proyectos y resultados permanecen en las carpetas que elegiste al crearlos.
+
 ## Primer arranque
 
 1. En cada arranque la aplicación comprueba rutas y versiones de las herramientas. Puedes indicar una ruta manual cuando haya varias copias, actualizar el índice de Kali e instalar o actualizar paquetes desde la misma pantalla.
